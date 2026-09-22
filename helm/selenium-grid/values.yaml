@@ -1,0 +1,115 @@
+# Custom Helm values for Selenium Grid on AKS
+# Official chart: docker-selenium/selenium-grid (https://www.selenium.dev/docker-selenium)
+
+global:
+  seleniumGrid:
+    # Set to true for distributed mode (Router, Distributor, SessionMap, etc.), false for Hub mode
+    isolateServers: false
+    # Optional grid security token if authentication is enabled
+    # gridSecurityToken: "demo-secure-token"
+
+# Selenium Grid Hub Configuration
+hub:
+  name: "selenium-hub"
+  imageName: "hub"
+  imageTag: "4.26.0-20241101"
+  port: 4444
+  gridSubPath: ""
+  sessionTimeout: "300"
+  newSessionWaitTimeout: "60"
+  
+  # Service configuration
+  # By using the Azure Internal Load Balancer annotation, the Hub gets a private IP within the AKS VNet subnet,
+  # making it directly accessible from the Jumpbox VM without exposing anything to the public internet.
+  serviceType: "LoadBalancer"
+  servicePort: 4444
+  serviceAnnotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+
+  resources:
+    limits:
+      cpu: "1000m"
+      memory: "1024Mi"
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# Chrome Browser Node Configuration
+chromeNode:
+  enabled: true
+  replicas: 2
+  imageName: "node-chrome"
+  imageTag: "4.26.0-20241101"
+  maxSessions: 1
+
+  # Crucial for Chromium/Chrome stability in containerized environments: the chart
+  # mounts an in-memory /dev/shm volume automatically based on shmSize.
+  shmSize: "1Gi"
+
+  resources:
+    limits:
+      cpu: "2000m"
+      memory: "2048Mi"
+    requests:
+      cpu: "500m"
+      memory: "1024Mi"
+
+# Firefox Browser Node Configuration
+firefoxNode:
+  enabled: true
+  replicas: 2
+  imageName: "node-firefox"
+  imageTag: "4.26.0-20241101"
+  maxSessions: 1
+
+  shmSize: "1Gi"
+
+  resources:
+    limits:
+      cpu: "2000m"
+      memory: "2048Mi"
+    requests:
+      cpu: "500m"
+      memory: "1024Mi"
+
+# Microsoft Edge Browser Node Configuration
+edgeNode:
+  enabled: true
+  replicas: 2
+  imageName: "node-edge"
+  imageTag: "4.26.0-20241101"
+  maxSessions: 1
+
+  shmSize: "1Gi"
+
+  resources:
+    limits:
+      cpu: "2000m"
+      memory: "2048Mi"
+    requests:
+      cpu: "500m"
+      memory: "1024Mi"
+
+# Session video recording: adds a selenium/video sidecar to each browser node
+# that records every session to /videos inside the node pod (paired with the
+# se:recordVideo capability the tests request). Retrieve with `kubectl cp`.
+videoRecorder:
+  enabled: true
+
+# Autoscaling (KEDA) configuration (optional, can be toggled if KEDA is installed)
+autoscaling:
+  enabled: false

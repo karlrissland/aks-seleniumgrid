@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+name: aks-seleniumgrid
+metadata:
+  template: aks-seleniumgrid@1.0.0
+
+# This project provisions infrastructure (AKS, Bastion, Jumpbox) with Bicep and then
+# installs Selenium Grid via Helm using a postprovision hook. There are no azd
+# "services" to deploy, so `azd up` == `azd provision` + hooks.
+#
+# azd securely prompts for the Jumpbox admin password (adminPassword) on first run
+# and stores it in the environment; retrieve it with `azd env get-value ADMIN_PASSWORD`.
+hooks:
+  # Install / upgrade Selenium Grid on the freshly provisioned AKS cluster.
+  postprovision:
+    posix:
+      shell: sh
+      run: ./scripts/install-selenium-grid.sh
+      interactive: true
+      continueOnError: false
+    windows:
+      shell: pwsh
+      run: ./scripts/install-selenium-grid.ps1
+      interactive: true
+      continueOnError: false
