@@ -19,6 +19,9 @@ param aksNodeCount int = 2
 @description('VM Size for the Jumpbox.')
 param jumpboxVmSize string = 'Standard_D2s_v5'
 
+@description('VM Size for the GitHub self-hosted runner VM.')
+param runnerVmSize string = 'Standard_D2s_v5'
+
 @description('Admin username for the Jumpbox and AKS Linux nodes.')
 param adminUsername string = 'azureuser'
 
@@ -54,6 +57,7 @@ module network 'modules/network.bicep' = {
     vnetAddressPrefix: '10.0.0.0/16'
     bastionSubnetPrefix: '10.0.1.0/24'
     jumpboxSubnetPrefix: '10.0.2.0/24'
+    runnerSubnetPrefix: '10.0.3.0/24'
     aksSubnetPrefix: '10.0.4.0/22'
   }
 }
@@ -115,6 +119,19 @@ module jumpbox 'modules/jumpbox.bicep' = {
   ]
 }
 
+// GitHub self-hosted runner VM (Linux)
+module ghRunner 'modules/gh-runner.bicep' = {
+  name: 'deploy-gh-runner'
+  params: {
+    location: location
+    vmName: 'gh-runner-vm'
+    subnetId: network.outputs.runnerSubnetId
+    vmSize: runnerVmSize
+    adminUsername: adminUsername
+    adminPassword: adminPassword
+  }
+}
+
 // Azure RBAC: Azure Kubernetes Service Cluster Admin Role definition ID
 var aksClusterAdminRoleId = '0ab0b1a8-8aac-4efd-b8c2-3ee1fb270be8'
 // Azure Kubernetes Service Contributor Role
@@ -147,3 +164,6 @@ output jumpboxPrivateIp string = jumpbox.outputs.privateIpAddress
 output bastionHostName string = bastion.outputs.bastionHostName
 output bastionHostId string = bastion.outputs.bastionHostId
 output jumpboxVmId string = jumpbox.outputs.vmId
+output ghRunnerVmName string = ghRunner.outputs.vmName
+output ghRunnerVmId string = ghRunner.outputs.vmId
+output ghRunnerPrivateIp string = ghRunner.outputs.privateIpAddress
