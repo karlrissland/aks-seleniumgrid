@@ -63,6 +63,14 @@ chromeNode:
   # mounts an in-memory /dev/shm volume automatically based on shmSize.
   shmSize: "1Gi"
 
+  # Live view (noVNC): no password so the Grid Console camera opens directly.
+  # To require a password instead, drop SE_VNC_NO_PASSWORD and set:
+  #   - name: SE_VNC_PASSWORD
+  #     value: "yourPassword"
+  extraEnvironmentVariables:
+    - name: SE_VNC_NO_PASSWORD
+      value: "true"
+
   resources:
     limits:
       cpu: "2000m"
@@ -81,6 +89,11 @@ firefoxNode:
 
   shmSize: "1Gi"
 
+  # Live view (noVNC): no password (see chromeNode notes to require one).
+  extraEnvironmentVariables:
+    - name: SE_VNC_NO_PASSWORD
+      value: "true"
+
   resources:
     limits:
       cpu: "2000m"
@@ -98,6 +111,11 @@ edgeNode:
   maxSessions: 1
 
   shmSize: "1Gi"
+
+  # Live view (noVNC): no password (see chromeNode notes to require one).
+  extraEnvironmentVariables:
+    - name: SE_VNC_NO_PASSWORD
+      value: "true"
 
   resources:
     limits:

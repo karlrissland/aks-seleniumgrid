@@ -7,7 +7,7 @@ This repository contains Infrastructure as Code (Bicep), Helm chart configuratio
 - **Infrastructure as Code**: Modular Azure Bicep (`infra/` directory).
   - VNet segmentation: `AzureBastionSubnet`, `AksSubnet`, `JumpboxSubnet`.
   - AKS: 2-node cluster with system/user-assigned managed identity, Azure CNI Overlay, and RBAC enabled.
-  - Jumpbox: Windows 11 desktop VM (username/password auth) with a winget bootstrap that installs tooling (`az`, `kubectl`, `helm`, `python`, `git`) and configures a machine-wide kubeconfig.
+  - Jumpbox: Windows 11 desktop VM (username/password auth) with a Chocolatey bootstrap that installs tooling (`az`, `kubectl`, `helm`, `python`, `git`, `node`, JDK) and configures a machine-wide kubeconfig.
   - Bastion: Developer SKU (no public IP), browser/RDP access to the Jumpbox.
   - Security: Isolated networking, no public IP directly attached to AKS or Jumpbox, accessed via Azure Bastion.
 - **Selenium Grid Deployment**:

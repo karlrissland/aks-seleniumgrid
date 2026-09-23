@@ -51,7 +51,7 @@ Deploy and run a multi-browser **Selenium Grid 4** cluster on **Azure Kubernetes
 │       ├── bastion.bicep              # Azure Bastion (Developer SKU, no public IP)
 │       ├── privatedns.bicep           # Private DNS zone dev.lab + seleniumgrid A record
 │       ├── aks.bicep                  # 2-node AKS cluster with Azure CNI Overlay
-│       └── jumpbox.bicep              # Windows 11 desktop + winget bootstrap, repo clone & shortcuts
+│       └── jumpbox.bicep              # Windows 11 desktop + Chocolatey bootstrap, repo clone & shortcuts
 ├── helm/
 │   └── selenium-grid/
 │       ├── values.yaml                # Custom Helm values for Hub & browser nodes
@@ -128,7 +128,7 @@ azd env get-value ADMIN_PASSWORD   # copy this value
 2. Select **Connect → Bastion**.
 3. Choose **RDP**, set **Username** `azureuser`, paste the password, and click **Connect**.
 
-Once you're on the desktop, `az`, `kubectl`, `helm`, `python`, and `git` are already installed (via a **winget** bootstrap), and a **machine-wide kubeconfig** is configured (`KUBECONFIG=C:\ProgramData\kube\config`) — so `kubectl get nodes` and `helm list -A` work immediately, no login required.
+Once you're on the desktop, `az`, `kubectl`, `helm`, `python`, and `git` are already installed (via a **Chocolatey** bootstrap), and a **machine-wide kubeconfig** is configured (`KUBECONFIG=C:\ProgramData\kube\config`) — so `kubectl get nodes` and `helm list -A` work immediately, no login required.
 
 > ℹ️ The Bastion **Developer SKU** is browser-only (single session, same-VNet, no public IP). The native-client CLI commands (`az network bastion ssh` / `tunnel`) require the **Standard** SKU and are not available on Developer.
 >
@@ -305,13 +305,21 @@ azd down --purge
 ## ⚠️ Notes & Caveats
 
 - **Video recordings are in-pod / ephemeral.** The `selenium/video` sidecar records to a volume inside each browser-node pod, and the recorder image tag tracks the chart default (it is intentionally **not pinned**, so it never conflicts with the pinned `4.26.0-20241101` node images). Videos are lost if a node pod restarts — **copy them out with `kubectl cp` after each run** (see Step 6). For durable retention you'd add an uploader (e.g. to Azure Blob) or a `PersistentVolumeClaim`.
-- **Allure depends on the Jumpbox bootstrap succeeding.** The `allure` CLI is installed by the winget bootstrap (Node.js + OpenJDK + `npm install -g allure-commandline`). winget runs in the SYSTEM context and can occasionally fail, in which case `allure serve` won't resolve. The **pytest-html report (`test-results/report.html`) is always produced** and needs nothing extra — treat it as the reliable results view, with Allure as the richer add-on.
-  - Bootstrap log: `C:\Windows\Temp\jumpbox-bootstrap.log`. Re-run the bootstrap non-interactively with `az vm run-command invoke --resource-group rg-<env> --name vm-sel-aks-jumpbox --command-id RunPowerShellScript --scripts "<install commands>"`, or just install the missing tool over RDP (e.g. `winget install OpenJS.NodeJS.LTS`).
+- **Allure depends on the Jumpbox bootstrap succeeding.** The `allure` CLI is installed by the Chocolatey bootstrap (Node.js + OpenJDK + `npm install -g allure-commandline`). If the bootstrap didn't complete, `allure serve` won't resolve. The **pytest-html report (`test-results/report.html`) is always produced** and needs nothing extra — treat it as the reliable results view, with Allure as the richer add-on.
+  - Bootstrap log: `C:\Windows\Temp\jumpbox-bootstrap.log`. Re-apply the bootstrap by re-running `azd provision` (it re-executes the run command), or install a missing tool over RDP with Chocolatey (e.g. `choco install -y nodejs-lts`).
+  - **Note:** the bootstrap uses **Chocolatey**, not winget — winget does not work in the SYSTEM/run-command context the VM extension runs under.
 - **Browser-node pods show `0/1 READY`** even when healthy — a known docker-selenium chart readiness-probe quirk. The hub's `/status` (`"ready": true`) is the authoritative signal.
+- **Live view (noVNC) is password-free** for the demo — clicking a session's camera in the Grid Console opens straight into it. This is set via `SE_VNC_NO_PASSWORD: "true"` on each browser node in [helm/selenium-grid/values.yaml](helm/selenium-grid/values.yaml). To require a password instead, remove that env var (the image default password is `secret`) or set a custom one:
+  ```yaml
+  extraEnvironmentVariables:
+    - name: SE_VNC_PASSWORD
+      value: "yourPassword"
+  ```
+  Re-run `./scripts/install-selenium-grid.ps1` (or `azd provision`) after changing it.
 - **The hub is private** (internal load balancer). Run tests from the Jumpbox, or `kubectl port-forward` the hub to your machine for the Console/`/status`.
 - **Bastion Developer SKU** is browser/RDP only (no public IP, single session, same-VNet) and is limited to [certain regions](https://learn.microsoft.com/azure/bastion/bastion-overview#sku); switch the [bastion module](infra/modules/bastion.bicep) to Standard if it's unavailable in yours.
 - **The hub IP is pinned** to `10.0.7.100` so the `seleniumgrid.dev.lab` Private DNS A record is stable. This value is set in **two places that must stay in sync**: the `azure-load-balancer-ipv4` annotation in [helm/selenium-grid/values.yaml](helm/selenium-grid/values.yaml) and `hubInternalIp` in [infra/resources.bicep](infra/resources.bicep). The address must be free and within the AKS subnet (`10.0.4.0/22`).
-- **Desktop shortcuts & repo clone** are created by the Jumpbox bootstrap (as SYSTEM) on the Public Desktop, and the repo is cloned to `C:\Demo\aks-seleniumgrid`. If the winget/git steps failed, re-run the bootstrap (see the Allure note) or `git clone` manually.
+- **Desktop shortcuts & repo clone** are created by the Jumpbox bootstrap (as SYSTEM) on the Public Desktop, and the repo is cloned to `C:\Demo\aks-seleniumgrid` (with a zip-download fallback if git isn't available). If they're missing, re-run `azd provision` or `git clone` manually.
 - **Grid Console URL needs the trailing slash + plain http.** Use `http://seleniumgrid.dev.lab:4444/ui/` (or `http://<hub-ip>:4444/ui/`). Without the trailing slash the console's relative assets 404 and the page renders blank; the hub doesn't serve TLS on 4444, so `https://` fails. `/status` is the health check; a browser **GET** to `/wd/hub` returns `"unknown command"` — that's expected (it's the POST-only WebDriver endpoint), not an error.
 - **Private DNS resolution** relies on the VNet using default Azure-provided DNS (this template doesn't set custom DNS servers). The `dev.lab` zone uses `.lab` deliberately — the real `.dev` TLD is HSTS-preloaded and would force HTTPS, breaking the plain-http hub.
 - **Transient AKS API resets from the local machine.** `azd`/Helm calls to the public API server can hit `An existing connection was forcibly closed`; the postprovision hook retries the Helm step automatically. If it stays flaky, run the grid install from the Jumpbox instead (Step 3).

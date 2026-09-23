@@ -136,25 +136,23 @@ param(
 $ErrorActionPreference = 'Continue'
 Start-Transcript -Path 'C:\Windows\Temp\jumpbox-bootstrap.log' -Append
 
-# winget runs from the SYSTEM context here, so resolve its full path under WindowsApps.
-$winget = (Get-ChildItem 'C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe' -ErrorAction SilentlyContinue |
-    Sort-Object FullName | Select-Object -Last 1).FullName
+# winget does NOT work in the SYSTEM / run-command context (it exits with no
+# effect), so Chocolatey is used for reliable headless, machine-wide installs.
+Set-ExecutionPolicy Bypass -Scope Process -Force
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+    Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+}
+$choco = (Get-Command choco -ErrorAction SilentlyContinue).Source
+if (-not $choco) { $choco = "$env:ProgramData\chocolatey\bin\choco.exe" }
 
-function Install-Pkg([string]$id) {
-    if (-not $winget) { Write-Host "winget not found; cannot install $id"; return }
-    Write-Host "Installing $id ..."
-    & $winget install --id $id --scope machine --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
-    if ($LASTEXITCODE -ne 0) {
-        # Some packages don't support machine scope; retry with the default scope.
-        & $winget install --id $id --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
-    }
+if (Test-Path $choco) {
+    & $choco install -y --no-progress azure-cli kubernetes-cli kubernetes-helm python git nodejs-lts microsoft-openjdk
 }
 
-foreach ($id in 'Microsoft.AzureCLI', 'Kubernetes.kubectl', 'Helm.Helm', 'Python.Python.3.12', 'Git.Git', 'Microsoft.OpenJDK.21', 'OpenJS.NodeJS.LTS') {
-    Install-Pkg $id
-}
-
-# Refresh PATH from the registry so the freshly installed tools resolve in this session.
+# Refresh PATH so the freshly installed tools resolve in this session.
+Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1" -ErrorAction SilentlyContinue
+if (Get-Command refreshenv -ErrorAction SilentlyContinue) { refreshenv }
 $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
 
 $azCmd = (Get-Command az -ErrorAction SilentlyContinue).Source
@@ -204,11 +202,30 @@ $repoDir = 'C:\Demo\aks-seleniumgrid'
 if ($RepoUrl) {
     New-Item -ItemType Directory -Path 'C:\Demo' -Force | Out-Null
     $git = (Get-Command git -ErrorAction SilentlyContinue).Source
-    if ($git) {
+    if (-not $git) { $git = 'C:\Program Files\Git\cmd\git.exe' }
+    if (Test-Path $git) {
         if (Test-Path (Join-Path $repoDir '.git')) {
             & $git -C $repoDir pull --ff-only
         } else {
             & $git clone $RepoUrl $repoDir
+        }
+    }
+    # Fallback: download the repo as a zip if git isn't available or the clone failed.
+    if (-not (Test-Path (Join-Path $repoDir 'scripts\Run-Demo.ps1'))) {
+        try {
+            $zipUrl = ($RepoUrl -replace '\.git$', '') + '/archive/refs/heads/main.zip'
+            $zip = Join-Path $env:TEMP 'repo.zip'
+            Invoke-WebRequest -Uri $zipUrl -OutFile $zip -UseBasicParsing
+            $tmp = Join-Path $env:TEMP 'repoextract'
+            Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+            Expand-Archive -Path $zip -DestinationPath $tmp -Force
+            $inner = Get-ChildItem $tmp -Directory | Select-Object -First 1
+            if ($inner) {
+                New-Item -ItemType Directory -Path $repoDir -Force | Out-Null
+                Copy-Item -Path (Join-Path $inner.FullName '*') -Destination $repoDir -Recurse -Force
+            }
+        } catch {
+            Write-Host "Repo zip fallback failed: $_"
         }
     }
 }
