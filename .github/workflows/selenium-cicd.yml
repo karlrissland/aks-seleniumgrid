@@ -1,0 +1,167 @@
+name: Selenium Grid CI/CD (AKS)
+
+# Manual demo pipeline: provisions the full private AKS + Selenium Grid environment
+# with the SAME azd commands used locally, registers a self-hosted runner on the
+# in-VNet gh-runner-vm (label `selenium`), runs the UI tests from that runner, then
+# tears everything down. GitHub -> Azure auth is OIDC (federated); runner
+# registration uses a PAT (GITHUB_TOKEN cannot mint runner tokens).
+
+on:
+  workflow_dispatch:
+    inputs:
+      environmentName:
+        description: azd environment name (also names the resource group rg-<name>)
+        type: string
+        default: sel-cicd
+      location:
+        description: Azure region
+        type: string
+        default: eastus2
+      browser:
+        description: Browser(s) to run
+        type: choice
+        options: [all, chrome, firefox, edge]
+        default: all
+      destroy:
+        description: Tear down the environment after the run
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write   # OIDC token for azure/login + azd auth login
+  contents: read
+
+concurrency:
+  group: selenium-cicd-${{ inputs.environmentName }}
+  cancel-in-progress: false
+
+env:
+  AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  AZURE_ENV_NAME: ${{ inputs.environmentName }}
+  AZURE_LOCATION: ${{ inputs.location }}
+  ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+
+jobs:
+  provision:
+    name: Provision AKS + Selenium Grid, register runner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install azd
+        uses: Azure/setup-azd@v2
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Install helm
+        uses: azure/setup-helm@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: azd login (federated)
+        run: |
+          azd auth login \
+            --client-id "$AZURE_CLIENT_ID" \
+            --federated-credential-provider github \
+            --tenant-id "$AZURE_TENANT_ID"
+
+      - name: Provision environment (azd up)
+        run: |
+          azd env new "$AZURE_ENV_NAME" \
+            --subscription "$AZURE_SUBSCRIPTION_ID" \
+            --location "$AZURE_LOCATION" --no-prompt
+          azd up --no-prompt
+
+      - name: Register self-hosted runner on gh-runner-vm
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          RESOURCE_GROUP: rg-${{ inputs.environmentName }}
+          RUNNER_VM_NAME: gh-runner-vm
+          RUNNER_NAME: ${{ inputs.environmentName }}-gh-runner
+          GH_RUNNER_PAT: ${{ secrets.GH_RUNNER_PAT }}
+        run: bash scripts/register-runner.sh
+
+  test:
+    name: Run Selenium tests (self-hosted, in-VNet)
+    needs: provision
+    runs-on: [self-hosted, selenium]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install test dependencies
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install -r tests/requirements.txt
+
+      - name: Run pytest against the private grid
+        run: |
+          . .venv/bin/activate
+          python -m pytest tests/ \
+            --grid-url "http://seleniumgrid.dev.lab:4444/wd/hub" \
+            --browser-name "${{ inputs.browser }}" \
+            --alluredir allure-results \
+            --html=test-results/report.html --self-contained-html -v
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selenium-report-${{ inputs.environmentName }}
+          path: |
+            test-results/
+            allure-results/
+          if-no-files-found: warn
+
+  teardown:
+    name: Deregister runner + azd down
+    needs: [provision, test]
+    if: ${{ always() && inputs.destroy }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install azd
+        uses: Azure/setup-azd@v2
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deregister self-hosted runner
+        continue-on-error: true
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          RUNNER_NAME: ${{ inputs.environmentName }}-gh-runner
+          GH_RUNNER_PAT: ${{ secrets.GH_RUNNER_PAT }}
+        run: bash scripts/unregister-runner.sh
+
+      - name: azd login (federated)
+        run: |
+          azd auth login \
+            --client-id "$AZURE_CLIENT_ID" \
+            --federated-credential-provider github \
+            --tenant-id "$AZURE_TENANT_ID"
+
+      - name: Deprovision environment (azd down)
+        run: |
+          azd env new "$AZURE_ENV_NAME" \
+            --subscription "$AZURE_SUBSCRIPTION_ID" \
+            --location "$AZURE_LOCATION" --no-prompt || azd env select "$AZURE_ENV_NAME"
+          # Re-hydrate state from the live deployment so azd knows what to delete.
+          azd env refresh --no-prompt || true
+          azd down --force --purge || az group delete --name "rg-$AZURE_ENV_NAME" --yes --no-wait

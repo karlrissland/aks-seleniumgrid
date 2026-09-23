@@ -40,7 +40,9 @@ Deploy and run a multi-browser **Selenium Grid 4** cluster on **Azure Kubernetes
 ```
 .
 ├── .github/
-│   └── copilot-instructions.md       # Copilot Agent instructions & project standards
+│   ├── copilot-instructions.md       # Copilot Agent instructions & project standards
+│   └── workflows/
+│       └── selenium-cicd.yml          # Optional CI/CD: provision → test (self-hosted) → teardown
 ├── azure.yaml                         # Azure Developer CLI (azd) config + provisioning hooks
 ├── infra/
 │   ├── main.bicep                     # azd entry point (subscription scope, creates the RG)
@@ -51,6 +53,7 @@ Deploy and run a multi-browser **Selenium Grid 4** cluster on **Azure Kubernetes
 │       ├── bastion.bicep              # Azure Bastion (Developer SKU, no public IP)
 │       ├── privatedns.bicep           # Private DNS zone dev.lab + seleniumgrid A record
 │       ├── aks.bicep                  # 2-node AKS cluster with Azure CNI Overlay
+│       ├── gh-runner.bicep            # Ubuntu VM hosting the self-hosted GitHub runner
 │       └── jumpbox.bicep              # Windows 11 desktop + Chocolatey bootstrap, repo clone & shortcuts
 ├── helm/
 │   └── selenium-grid/
@@ -66,7 +69,11 @@ Deploy and run a multi-browser **Selenium Grid 4** cluster on **Azure Kubernetes
 │   ├── install-selenium-grid.ps1      # azd postprovision hook (Windows) — deploys the grid
 │   ├── install-selenium-grid.sh       # azd postprovision hook (Linux/macOS)
 │   ├── Run-Demo.ps1                   # One-click demo runner (backs the desktop shortcut)
-│   └── run-tests.sh                   # Script to execute pytest against the grid (Linux)
+│   ├── run-tests.sh                   # Script to execute pytest against the grid (Linux)
+│   ├── setup-oidc.sh                  # One-time GitHub → Azure OIDC federation helper
+│   ├── setup-runner.sh                # On-VM self-hosted runner install (label: selenium)
+│   ├── register-runner.sh             # Registers the runner on gh-runner-vm (CI)
+│   └── unregister-runner.sh           # Deregisters the runner from the repo (CI)
 └── README.md                          # Project documentation
 ```
 
@@ -299,6 +306,67 @@ kubectl cp selenium/<node-pod-name>:/videos ./videos
 ```powershell
 azd down --purge
 ```
+
+---
+
+## 🤖 Optional: CI/CD demo via GitHub Actions
+
+Instead of running everything by hand, you can drive the whole lifecycle — **provision → test → tear down** — from a single GitHub Actions workflow ([.github/workflows/selenium-cicd.yml](.github/workflows/selenium-cicd.yml)). It runs the **same `azd` commands** used locally, then runs the UI tests from a **self-hosted runner on the in-VNet `gh-runner-vm`** (the only host that can reach the private grid). This section is **entirely optional** — skip it if you only want the local/Jumpbox flow above.
+
+How the workflow is structured (three jobs):
+
+1. **provision** (GitHub-hosted) — logs into Azure via **OIDC**, runs `azd up` (provisions the network, Bastion, Jumpbox, AKS, and `gh-runner-vm`, then installs the grid), and registers a self-hosted runner on `gh-runner-vm` with the label **`selenium`**.
+2. **test** (`runs-on: [self-hosted, selenium]`) — runs the pytest suite against the private hub at `http://seleniumgrid.dev.lab:4444/wd/hub` and uploads `test-results/report.html` + `allure-results/` as a **workflow artifact**.
+3. **teardown** (GitHub-hosted, `if: always() && destroy`) — deregisters the runner and runs `azd down --force --purge`.
+
+The runner is set up using the pattern from [karlrissland/github-runner-setup](https://github.com/karlrissland/github-runner-setup): a registration token is minted with the GitHub REST API and [scripts/setup-runner.sh](scripts/setup-runner.sh) is executed on the VM via `az vm run-command` ([scripts/register-runner.sh](scripts/register-runner.sh) / [scripts/unregister-runner.sh](scripts/unregister-runner.sh)).
+
+### One-time setup
+
+**1. Federate GitHub → Azure (OIDC).** Create an Entra app registration with a federated credential scoped to this repo and grant it `Contributor`. Use the helper (requires `az login` as a subscription Owner/User Access Administrator):
+
+```bash
+REPO_OWNER=<your-org-or-user> REPO_NAME=aks-seleniumgrid bash scripts/setup-oidc.sh
+```
+
+<details>
+<summary>…or do it manually with <code>az</code></summary>
+
+```bash
+appId=$(az ad app create --display-name gh-oidc-aks-seleniumgrid --query appId -o tsv)
+az ad sp create --id "$appId"
+az ad app federated-credential create --id "$appId" --parameters '{
+  "name": "gh-aks-seleniumgrid-main",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:<owner>/aks-seleniumgrid:ref:refs/heads/main",
+  "audiences": ["api://AzureADTokenExchange"]
+}'
+subId=$(az account show --query id -o tsv)
+az role assignment create --assignee "$appId" --role Contributor --scope "/subscriptions/$subId"
+```
+</details>
+
+> The federated **subject** must match how the workflow runs. The example covers `workflow_dispatch` on the **`main`** branch (`ref:refs/heads/main`). Run from another branch → add a matching credential (or use a GitHub **Environment** subject `repo:<owner>/<repo>:environment:<name>` for an approval gate).
+
+**2. Create a GitHub PAT for runner registration.** `GITHUB_TOKEN` can't mint runner tokens, so a PAT is required:
+- **Fine-grained** (recommended): this repo → **Administration: Read and write**.
+- **Classic**: `repo` scope.
+
+**3. Add the repo variables and secrets** (Settings → Secrets and variables → Actions):
+
+| Name | Kind | Value |
+|------|------|-------|
+| `AZURE_CLIENT_ID` | Variable | App registration (client) ID |
+| `AZURE_TENANT_ID` | Variable | Directory (tenant) ID |
+| `AZURE_SUBSCRIPTION_ID` | Variable | Target subscription ID |
+| `ADMIN_PASSWORD` | Secret | Strong password for the VM admin (`azureuser`) |
+| `GH_RUNNER_PAT` | Secret | PAT from step 2 |
+
+### Run it
+
+**Actions → Selenium Grid CI/CD (AKS) → Run workflow.** Inputs: `environmentName` (default `sel-cicd`), `location` (default `eastus2`), `browser` (`all`/`chrome`/`firefox`/`edge`), and `destroy` (default **true**). When it finishes, download the **`selenium-report-<env>`** artifact for the HTML/Allure report. With `destroy` on, the environment is removed automatically.
+
+> 💰 **Cost / safety:** the workflow stands up a full AKS cluster plus VMs. Leave `destroy` on so it always tears down (`if: always()`); the final job re-hydrates the azd environment (`azd env refresh`) so `azd down --force --purge` can clean up, falling back to `az group delete rg-<env>` if state can't be recovered. Set `destroy: false` only when you want to keep the environment for inspection — remember to tear it down yourself.
 
 ---
 

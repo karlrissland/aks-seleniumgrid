@@ -65,5 +65,6 @@ output AKS_CLUSTER_NAME string = resources.outputs.aksClusterName
 output JUMPBOX_VM_NAME string = resources.outputs.jumpboxVmName
 output JUMPBOX_PRIVATE_IP string = resources.outputs.jumpboxPrivateIp
 output JUMPBOX_VM_ID string = resources.outputs.jumpboxVmId
+output GH_RUNNER_VM_NAME string = resources.outputs.ghRunnerVmName
 output BASTION_HOST_NAME string = resources.outputs.bastionHostName
 output ADMIN_USERNAME string = adminUsername
