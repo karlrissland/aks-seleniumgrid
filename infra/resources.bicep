@@ -41,9 +41,13 @@ var gridDnsZoneName = 'dev.lab'
 var gridDnsRecordName = 'seleniumgrid'
 var gridDnsName = '${gridDnsRecordName}.${gridDnsZoneName}'
 
+// Deterministic per (subscription, resource group) suffix so resource names stay
+// unique across environments/deployments and never collide.
+var resourceToken = uniqueString(subscription().id, resourceGroup().id)
+
 // User-assigned managed identity for the Jumpbox VM
 resource jumpboxIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: 'id-${resourcePrefix}-jumpbox'
+  name: 'id-${resourcePrefix}-${resourceToken}'
   location: location
   tags: tags
 }
@@ -53,7 +57,7 @@ module network 'modules/network.bicep' = {
   name: 'deploy-network'
   params: {
     location: location
-    vnetName: 'vnet-${resourcePrefix}'
+    vnetName: 'vnet-${resourcePrefix}-${resourceToken}'
     vnetAddressPrefix: '10.0.0.0/16'
     bastionSubnetPrefix: '10.0.1.0/24'
     jumpboxSubnetPrefix: '10.0.2.0/24'
@@ -67,7 +71,7 @@ module bastion 'modules/bastion.bicep' = {
   name: 'deploy-bastion'
   params: {
     location: location
-    bastionHostName: 'bas-${resourcePrefix}'
+    bastionHostName: 'bas-${resourcePrefix}-${resourceToken}'
     virtualNetworkId: network.outputs.vnetId
   }
 }
@@ -88,7 +92,7 @@ module aks 'modules/aks.bicep' = {
   name: 'deploy-aks'
   params: {
     location: location
-    clusterName: 'aks-${resourcePrefix}'
+    clusterName: 'aks-${resourcePrefix}-${resourceToken}'
     subnetId: network.outputs.aksSubnetId
     nodeVmSize: aksNodeVmSize
     nodeCount: aksNodeCount
@@ -102,7 +106,7 @@ module jumpbox 'modules/jumpbox.bicep' = {
   name: 'deploy-jumpbox'
   params: {
     location: location
-    vmName: 'vm-${resourcePrefix}-jumpbox'
+    vmName: 'vm-${resourcePrefix}-jb-${resourceToken}'
     subnetId: network.outputs.jumpboxSubnetId
     vmSize: jumpboxVmSize
     adminUsername: adminUsername
@@ -124,7 +128,7 @@ module ghRunner 'modules/gh-runner.bicep' = {
   name: 'deploy-gh-runner'
   params: {
     location: location
-    vmName: 'gh-runner-vm'
+    vmName: 'gh-runner-${resourceToken}'
     subnetId: network.outputs.runnerSubnetId
     vmSize: runnerVmSize
     adminUsername: adminUsername

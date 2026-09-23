@@ -84,11 +84,13 @@ jobs:
         env:
           REPO_OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
-          RESOURCE_GROUP: rg-${{ inputs.environmentName }}
-          RUNNER_VM_NAME: gh-runner-vm
           RUNNER_NAME: ${{ inputs.environmentName }}-gh-runner
           GH_RUNNER_PAT: ${{ secrets.GH_RUNNER_PAT }}
-        run: bash scripts/register-runner.sh
+        run: |
+          # RG and runner VM names carry a unique token, so read them from azd.
+          export RESOURCE_GROUP="$(azd env get-value AZURE_RESOURCE_GROUP)"
+          export RUNNER_VM_NAME="$(azd env get-value GH_RUNNER_VM_NAME)"
+          bash scripts/register-runner.sh
 
   test:
     name: Run Selenium tests (self-hosted, in-VNet)
@@ -164,4 +166,4 @@ jobs:
             --location "$AZURE_LOCATION" --no-prompt || azd env select "$AZURE_ENV_NAME"
           # Re-hydrate state from the live deployment so azd knows what to delete.
           azd env refresh --no-prompt || true
-          azd down --force --purge || az group delete --name "rg-$AZURE_ENV_NAME" --yes --no-wait
+          azd down --force --purge || az group delete --name "rg-selenium-$AZURE_ENV_NAME" --yes --no-wait

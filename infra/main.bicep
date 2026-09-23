@@ -35,7 +35,7 @@ var resourcePrefix = 'sel-aks'
 var tags = { 'azd-env-name': environmentName }
 
 resource rg 'Microsoft.Resources/resourceGroups@2021-04-01' = {
-  name: 'rg-${environmentName}'
+  name: 'rg-selenium-${environmentName}'
   location: location
   tags: tags
 }

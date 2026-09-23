@@ -44,14 +44,18 @@ else
     echo "Federated credential already exists for subject: ${SUBJECT}"
 fi
 
-# Grant Contributor on the subscription so the workflow can provision + tear down.
+# Grant roles so the workflow can provision + tear down. Contributor covers
+# resource CRUD; User Access Administrator is required because the infra creates
+# role assignments (Jumpbox identity -> AKS roles), which Contributor cannot do.
 SP_OBJECT_ID=$(az ad sp show --id "${APP_ID}" --query id -o tsv)
-az role assignment create \
-    --assignee-object-id "${SP_OBJECT_ID}" \
-    --assignee-principal-type ServicePrincipal \
-    --role Contributor \
-    --scope "/subscriptions/${SUBSCRIPTION_ID}" >/dev/null || true
-echo "Granted Contributor on subscription ${SUBSCRIPTION_ID}"
+for ROLE in "Contributor" "User Access Administrator"; do
+    az role assignment create \
+        --assignee-object-id "${SP_OBJECT_ID}" \
+        --assignee-principal-type ServicePrincipal \
+        --role "${ROLE}" \
+        --scope "/subscriptions/${SUBSCRIPTION_ID}" >/dev/null || true
+    echo "Granted ${ROLE} on subscription ${SUBSCRIPTION_ID}"
+done
 
 cat <<EOF
 

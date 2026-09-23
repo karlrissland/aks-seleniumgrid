@@ -102,7 +102,7 @@ azd up
 
 `azd` prompts for an environment name, Azure subscription, and region on first run. What happens:
 
-1. **provision** — deploys [infra/main.bicep](infra/main.bicep) (subscription scope; creates resource group `rg-<env-name>`). azd securely **prompts for the Jumpbox admin password** (`adminPassword`) on first run and stores it as `ADMIN_PASSWORD` (retrieve later with `azd env get-value ADMIN_PASSWORD`).
+1. **provision** — deploys [infra/main.bicep](infra/main.bicep) (subscription scope; creates resource group `rg-selenium-<env-name>`). azd securely **prompts for the Jumpbox admin password** (`adminPassword`) on first run and stores it as `ADMIN_PASSWORD` (retrieve later with `azd env get-value ADMIN_PASSWORD`).
 2. **postprovision hook** — pulls AKS credentials and installs Selenium Grid via Helm. On Windows this runs [scripts/install-selenium-grid.ps1](scripts/install-selenium-grid.ps1); on Linux/macOS it runs [scripts/install-selenium-grid.sh](scripts/install-selenium-grid.sh).
 
 > 💡 **Windows users:** the hooks are configured with both `windows` (PowerShell) and `posix` (sh) variants in [azure.yaml](azure.yaml), so `azd` picks the PowerShell scripts automatically — no bash required.
@@ -131,7 +131,7 @@ The Jumpbox is a **Windows 11 desktop**. Bastion is the **Developer SKU** (no pu
 azd env get-value ADMIN_PASSWORD   # copy this value
 ```
 
-1. In the [Azure Portal](https://portal.azure.com), open the Jumpbox VM `vm-sel-aks-jumpbox` (resource group `rg-<your-azd-env-name>`).
+1. In the [Azure Portal](https://portal.azure.com), open the Jumpbox VM (resource group `rg-selenium-<your-azd-env-name>`). Its name carries a unique suffix — get the exact name with `azd env get-value JUMPBOX_VM_NAME`.
 2. Select **Connect → Bastion**.
 3. Choose **RDP**, set **Username** `azureuser`, paste the password, and click **Connect**.
 
@@ -146,9 +146,11 @@ Once you're on the desktop, `az`, `kubectl`, `helm`, `python`, and `git` are alr
 You can drive the Windows Jumpbox non-interactively with `az vm run-command` (handy for demos and automation):
 
 ```powershell
+$rg = "rg-selenium-$(azd env get-value AZURE_ENV_NAME)"
+$vm = azd env get-value JUMPBOX_VM_NAME
 az vm run-command invoke `
-  --resource-group rg-<your-azd-env-name> `
-  --name vm-sel-aks-jumpbox `
+  --resource-group $rg `
+  --name $vm `
   --command-id RunPowerShellScript `
   --scripts "hostname; kubectl get pods -n selenium"
 ```
@@ -258,7 +260,7 @@ An end-to-end walkthrough for a live demo. Assumes `azd up` has already provisio
 azd env get-value ADMIN_PASSWORD   # copy the password
 ```
 
-1. In the [Azure Portal](https://portal.azure.com), open VM **`vm-sel-aks-jumpbox`** (resource group `rg-<your-azd-env-name>`).
+1. In the [Azure Portal](https://portal.azure.com), open the Jumpbox **VM** (resource group `rg-selenium-<your-azd-env-name>`; get the exact name with `azd env get-value JUMPBOX_VM_NAME`).
 2. **Connect → Bastion**, choose **RDP**, **Username** `azureuser`, paste the password, **Connect**.
 3. A **Windows 11 desktop** opens in the browser tab.
 
@@ -342,7 +344,9 @@ az ad app federated-credential create --id "$appId" --parameters '{
   "audiences": ["api://AzureADTokenExchange"]
 }'
 subId=$(az account show --query id -o tsv)
+# Contributor for resource CRUD; User Access Administrator because the infra creates role assignments.
 az role assignment create --assignee "$appId" --role Contributor --scope "/subscriptions/$subId"
+az role assignment create --assignee "$appId" --role "User Access Administrator" --scope "/subscriptions/$subId"
 ```
 </details>
 
@@ -364,11 +368,17 @@ $subject = "repo:<owner>/aks-seleniumgrid:ref:refs/heads/main"   # replace <owne
 az ad app federated-credential create --id $appId --parameters "@fedcred.json"
 
 $subId = az account show --query id -o tsv
+# Contributor for resource CRUD; User Access Administrator because the infra creates role assignments.
 az role assignment create --assignee $appId --role Contributor --scope "/subscriptions/$subId"
+az role assignment create --assignee $appId --role "User Access Administrator" --scope "/subscriptions/$subId"
 ```
 </details>
 
 > The federated **subject** must match how the workflow runs. The example covers `workflow_dispatch` on the **`main`** branch (`ref:refs/heads/main`). Run from another branch → add a matching credential (or use a GitHub **Environment** subject `repo:<owner>/<repo>:environment:<name>` for an approval gate).
+>
+> ⚠️ If Azure login later fails with `AADSTS700213: No matching federated identity record`, GitHub is presenting **immutable numeric IDs** in the subject (e.g. `repo:owner@123/repo@456:ref:refs/heads/main`) after a repo/owner rename or delete-and-recreate. Add a second federated credential whose `subject` matches the string in the error **exactly** (the IDs are stable).
+>
+> ⚠️ The SP needs **both** `Contributor` **and** `User Access Administrator` (or `Owner`). The infra creates role assignments (Jumpbox identity → AKS roles), and `Contributor` alone can't write role assignments — without UAA the deployment fails with `Microsoft.Authorization/roleAssignments/write` denied.
 
 **2. Create a GitHub PAT for runner registration.** `GITHUB_TOKEN` can't mint runner tokens, so a PAT is required:
 - **Fine-grained** (recommended): this repo → **Administration: Read and write**.
@@ -388,7 +398,7 @@ az role assignment create --assignee $appId --role Contributor --scope "/subscri
 
 **Actions → Selenium Grid CI/CD (AKS) → Run workflow.** Inputs: `environmentName` (default `sel-cicd`), `location` (default `eastus2`), `browser` (`all`/`chrome`/`firefox`/`edge`), and `destroy` (default **true**). When it finishes, download the **`selenium-report-<env>`** artifact for the HTML/Allure report. With `destroy` on, the environment is removed automatically.
 
-> 💰 **Cost / safety:** the workflow stands up a full AKS cluster plus VMs. Leave `destroy` on so it always tears down (`if: always()`); the final job re-hydrates the azd environment (`azd env refresh`) so `azd down --force --purge` can clean up, falling back to `az group delete rg-<env>` if state can't be recovered. Set `destroy: false` only when you want to keep the environment for inspection — remember to tear it down yourself.
+> 💰 **Cost / safety:** the workflow stands up a full AKS cluster plus VMs. Leave `destroy` on so it always tears down (`if: always()`); the final job re-hydrates the azd environment (`azd env refresh`) so `azd down --force --purge` can clean up, falling back to `az group delete rg-selenium-<env>` if state can't be recovered. Set `destroy: false` only when you want to keep the environment for inspection — remember to tear it down yourself.
 
 ---
 
