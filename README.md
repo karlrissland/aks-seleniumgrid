@@ -323,14 +323,14 @@ The runner is set up using the pattern from [karlrissland/github-runner-setup](h
 
 ### One-time setup
 
-**1. Federate GitHub → Azure (OIDC).** Create an Entra app registration with a federated credential scoped to this repo and grant it `Contributor`. Use the helper (requires `az login` as a subscription Owner/User Access Administrator):
+**1. Federate GitHub → Azure (OIDC).** Create an Entra app registration with a federated credential scoped to this repo and grant it `Contributor`. Use the helper — it's a **bash** script, so run it from **Git Bash**, **WSL**, or **Azure Cloud Shell** (requires `az login` as a subscription Owner/User Access Administrator):
 
 ```bash
 REPO_OWNER=<your-org-or-user> REPO_NAME=aks-seleniumgrid bash scripts/setup-oidc.sh
 ```
 
 <details>
-<summary>…or do it manually with <code>az</code></summary>
+<summary>…or do it manually with <code>az</code> (bash)</summary>
 
 ```bash
 appId=$(az ad app create --display-name gh-oidc-aks-seleniumgrid --query appId -o tsv)
@@ -343,6 +343,28 @@ az ad app federated-credential create --id "$appId" --parameters '{
 }'
 subId=$(az account show --query id -o tsv)
 az role assignment create --assignee "$appId" --role Contributor --scope "/subscriptions/$subId"
+```
+</details>
+
+<details>
+<summary>…or do it manually with <code>az</code> (PowerShell)</summary>
+
+```powershell
+$appId = az ad app create --display-name gh-oidc-aks-seleniumgrid --query appId -o tsv
+az ad sp create --id $appId
+
+# federated-credential wants a JSON file; build it, then pass with @file
+$subject = "repo:<owner>/aks-seleniumgrid:ref:refs/heads/main"   # replace <owner>
+@{
+  name      = "gh-aks-seleniumgrid-main"
+  issuer    = "https://token.actions.githubusercontent.com"
+  subject   = $subject
+  audiences = @("api://AzureADTokenExchange")
+} | ConvertTo-Json | Set-Content -Path fedcred.json -Encoding utf8
+az ad app federated-credential create --id $appId --parameters "@fedcred.json"
+
+$subId = az account show --query id -o tsv
+az role assignment create --assignee $appId --role Contributor --scope "/subscriptions/$subId"
 ```
 </details>
 
