@@ -28,6 +28,9 @@ param adminUsername string = 'azureuser'
 @description('Deploy AKS in private cluster mode.')
 param enablePrivateAksCluster bool = false
 
+@description('Public Git repo URL cloned onto the Jumpbox for the demo.')
+param repoUrl string = 'https://github.com/karlrissland/aks-seleniumgrid.git'
+
 var resourcePrefix = 'sel-aks'
 var tags = { 'azd-env-name': environmentName }
 
@@ -50,6 +53,7 @@ module resources 'resources.bicep' = {
     adminUsername: adminUsername
     enablePrivateAksCluster: enablePrivateAksCluster
     tags: tags
+    repoUrl: repoUrl
   }
 }
 

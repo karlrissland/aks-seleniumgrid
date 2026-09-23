@@ -26,6 +26,12 @@ param identityClientId string = ''
 @description('Name of the AKS cluster to configure a machine-wide kubeconfig for.')
 param aksClusterName string = ''
 
+@description('Public Git repo URL to clone onto the Jumpbox for the demo.')
+param repoUrl string = ''
+
+@description('Private DNS name of the Selenium Grid hub (e.g. seleniumgrid.dev.lab).')
+param gridDnsName string = ''
+
 resource nic 'Microsoft.Network/networkInterfaces@2023-11-01' = {
   name: 'nic-${vmName}'
   location: location
@@ -114,13 +120,17 @@ resource bootstrap 'Microsoft.Compute/virtualMachines/runCommands@2024-03-01' = 
       { name: 'ClusterName', value: aksClusterName }
       { name: 'ResourceGroupName', value: resourceGroup().name }
       { name: 'IdentityClientId', value: identityClientId }
+      { name: 'RepoUrl', value: repoUrl }
+      { name: 'GridDnsName', value: gridDnsName }
     ]
     source: {
       script: '''
 param(
     [string]$ClusterName,
     [string]$ResourceGroupName,
-    [string]$IdentityClientId
+    [string]$IdentityClientId,
+    [string]$RepoUrl,
+    [string]$GridDnsName
 )
 
 $ErrorActionPreference = 'Continue'
@@ -187,6 +197,42 @@ if ($npm) {
     if ($machinePath -notlike "*$npmPrefix*") {
         [Environment]::SetEnvironmentVariable('Path', ($machinePath.TrimEnd(';') + ';' + $npmPrefix), 'Machine')
     }
+}
+
+# Clone the public demo repo to a machine-wide location.
+$repoDir = 'C:\Demo\aks-seleniumgrid'
+if ($RepoUrl) {
+    New-Item -ItemType Directory -Path 'C:\Demo' -Force | Out-Null
+    $git = (Get-Command git -ErrorAction SilentlyContinue).Source
+    if ($git) {
+        if (Test-Path (Join-Path $repoDir '.git')) {
+            & $git -C $repoDir pull --ff-only
+        } else {
+            & $git clone $RepoUrl $repoDir
+        }
+    }
+}
+
+# Desktop shortcuts on the Public Desktop so the interactive user sees them.
+$publicDesktop = 'C:\Users\Public\Desktop'
+New-Item -ItemType Directory -Path $publicDesktop -Force | Out-Null
+
+if ($GridDnsName) {
+    Set-Content -Path (Join-Path $publicDesktop 'Selenium Grid.url') -Encoding ASCII -Value @(
+        '[InternetShortcut]',
+        ('URL=http://{0}:4444/ui/' -f $GridDnsName)
+    )
+}
+
+$runDemo = Join-Path $repoDir 'scripts\Run-Demo.ps1'
+if (Test-Path $runDemo) {
+    $wsh = New-Object -ComObject WScript.Shell
+    $lnk = $wsh.CreateShortcut((Join-Path $publicDesktop 'Run Selenium Demo.lnk'))
+    $lnk.TargetPath = 'powershell.exe'
+    $lnk.Arguments = '-NoExit -ExecutionPolicy Bypass -File "' + $runDemo + '" -GridDnsName ' + $GridDnsName
+    $lnk.WorkingDirectory = $repoDir
+    $lnk.IconLocation = 'powershell.exe,0'
+    $lnk.Save()
 }
 
 Stop-Transcript

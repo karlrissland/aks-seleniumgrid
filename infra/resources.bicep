@@ -28,6 +28,16 @@ param enablePrivateAksCluster bool = false
 @description('Tags applied to all resources.')
 param tags object = {}
 
+@description('Public Git repo URL cloned onto the Jumpbox for the demo.')
+param repoUrl string = ''
+
+// Static internal IP pinned for the Selenium Grid hub (MUST match the
+// azure-load-balancer-ipv4 annotation in helm/selenium-grid/values.yaml).
+var hubInternalIp = '10.0.7.100'
+var gridDnsZoneName = 'dev.lab'
+var gridDnsRecordName = 'seleniumgrid'
+var gridDnsName = '${gridDnsRecordName}.${gridDnsZoneName}'
+
 // User-assigned managed identity for the Jumpbox VM
 resource jumpboxIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: 'id-${resourcePrefix}-jumpbox'
@@ -54,6 +64,17 @@ module bastion 'modules/bastion.bicep' = {
   params: {
     location: location
     bastionHostName: 'bas-${resourcePrefix}'
+    virtualNetworkId: network.outputs.vnetId
+  }
+}
+
+// Private DNS: seleniumgrid.dev.lab -> pinned hub internal LB IP
+module dns 'modules/privatedns.bicep' = {
+  name: 'deploy-privatedns'
+  params: {
+    zoneName: gridDnsZoneName
+    recordName: gridDnsRecordName
+    targetIp: hubInternalIp
     virtualNetworkId: network.outputs.vnetId
   }
 }
@@ -85,6 +106,8 @@ module jumpbox 'modules/jumpbox.bicep' = {
     userAssignedIdentityId: jumpboxIdentity.id
     identityClientId: jumpboxIdentity.properties.clientId
     aksClusterName: aks.outputs.clusterName
+    repoUrl: repoUrl
+    gridDnsName: gridDnsName
   }
   // Ensure the identity has AKS admin rights before the bootstrap fetches kubeconfig.
   dependsOn: [

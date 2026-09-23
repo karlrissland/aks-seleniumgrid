@@ -49,8 +49,9 @@ Deploy and run a multi-browser **Selenium Grid 4** cluster on **Azure Kubernetes
 │   └── modules/
 │       ├── network.bicep              # VNet, Subnets, and NSGs
 │       ├── bastion.bicep              # Azure Bastion (Developer SKU, no public IP)
+│       ├── privatedns.bicep           # Private DNS zone dev.lab + seleniumgrid A record
 │       ├── aks.bicep                  # 2-node AKS cluster with Azure CNI Overlay
-│       └── jumpbox.bicep              # Windows 11 desktop + winget bootstrap tooling
+│       └── jumpbox.bicep              # Windows 11 desktop + winget bootstrap, repo clone & shortcuts
 ├── helm/
 │   └── selenium-grid/
 │       ├── values.yaml                # Custom Helm values for Hub & browser nodes
@@ -64,6 +65,7 @@ Deploy and run a multi-browser **Selenium Grid 4** cluster on **Azure Kubernetes
 ├── scripts/
 │   ├── install-selenium-grid.ps1      # azd postprovision hook (Windows) — deploys the grid
 │   ├── install-selenium-grid.sh       # azd postprovision hook (Linux/macOS)
+│   ├── Run-Demo.ps1                   # One-click demo runner (backs the desktop shortcut)
 │   └── run-tests.sh                   # Script to execute pytest against the grid (Linux)
 └── README.md                          # Project documentation
 ```
@@ -241,7 +243,7 @@ kubectl cp selenium/<node-pod-name>:/videos ./videos
 
 ## 🎬 Demo Script
 
-An end-to-end walkthrough for a live demo. Assumes `azd up` has already provisioned everything and installed the grid.
+An end-to-end walkthrough for a live demo. Assumes `azd up` has already provisioned everything and installed the grid. The Jumpbox bootstrap has already **cloned this repo to `C:\Demo\aks-seleniumgrid`** and placed two shortcuts on the desktop.
 
 ### 1. Log into the Windows Jumpbox (Azure Bastion → RDP)
 
@@ -255,48 +257,36 @@ azd env get-value ADMIN_PASSWORD   # copy the password
 
 > Talking point: neither the VM nor the AKS cluster has a public IP — you reached a fully private environment through the Bastion **Developer SKU** (which itself has no public IP).
 
-### 2. Show the box is ready (PowerShell on the Jumpbox)
+### 2. Open the live Grid Console
 
-```powershell
-python --version; kubectl version --client; helm version; allure --version
-kubectl get nodes
-kubectl get pods -n selenium
-```
-
-> Talking point: a winget bootstrap pre-installed the tooling and configured a **machine-wide kubeconfig** (`KUBECONFIG=C:\ProgramData\kube\config`), so `kubectl`/`helm` work with no login.
-
-### 3. Open the live Grid Console
-
-```powershell
-$hub = kubectl get svc selenium-grid-selenium-hub -n selenium -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
-Start-Process "msedge.exe" "http://$hub:4444/ui/"
-```
+Double-click the **“Selenium Grid”** desktop shortcut — it opens `http://seleniumgrid.dev.lab:4444/ui/` (a private DNS name that resolves, inside the VNet, to the hub's pinned internal IP `10.0.7.100`).
 
 Show the **Chrome / Firefox / Edge** slots registered and ready.
 
-> The trailing slash on `/ui/` matters — without it the console's assets 404 and the page renders blank. Use plain **http** (the hub doesn't serve TLS on 4444).
+> Talking point: there's no public IP anywhere — the browser reaches the hub over the VNet via a **Private DNS** record. The `/ui/` trailing slash and plain **http** are baked into the shortcut.
 
-### 4. Run the tests — and watch them live
+### 3. Run the tests — and watch them live
 
-```powershell
-git clone https://github.com/<your-org>/aks-seleniumgrid.git   # if not already cloned
-cd aks-seleniumgrid
-python -m pip install -r tests/requirements.txt
-$hub = kubectl get svc selenium-grid-selenium-hub -n selenium -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
-python -m pytest tests/ --grid-url "http://$hub:4444/wd/hub" --browser-name all `
-  --alluredir allure-results --html=test-results/report.html --self-contained-html -v
-```
+Double-click the **“Run Selenium Demo”** desktop shortcut. It opens PowerShell in `C:\Demo\aks-seleniumgrid`, installs the test deps, and runs the suite across all three browsers via `http://seleniumgrid.dev.lab:4444/wd/hub`.
 
 While it runs, flip to the Grid Console and click a session's **camera icon** to watch the browser drive Bing/Google live over noVNC.
 
-### 5. Show the results
+> Prefer a terminal? Everything the shortcut does is in [scripts/Run-Demo.ps1](scripts/Run-Demo.ps1):
+> ```powershell
+> cd C:\Demo\aks-seleniumgrid
+> ./scripts/Run-Demo.ps1                 # all browsers
+> ./scripts/Run-Demo.ps1 -Browser chrome # single browser
+> ```
+
+### 4. Show the results
 
 ```powershell
+cd C:\Demo\aks-seleniumgrid
 Start-Process test-results/report.html   # pytest-html summary (with failure screenshots)
 allure serve allure-results              # rich, interactive Allure report
 ```
 
-### 6. Show the recordings
+### 5. Show the recordings
 
 ```powershell
 kubectl get pods -n selenium
@@ -304,7 +294,7 @@ kubectl cp selenium/<node-pod-name>:/videos ./videos
 # open a .mp4 in .\videos to replay the full session
 ```
 
-### 7. (Optional) Tear down
+### 6. (Optional) Tear down
 
 ```powershell
 azd down --purge
@@ -320,3 +310,9 @@ azd down --purge
 - **Browser-node pods show `0/1 READY`** even when healthy — a known docker-selenium chart readiness-probe quirk. The hub's `/status` (`"ready": true`) is the authoritative signal.
 - **The hub is private** (internal load balancer). Run tests from the Jumpbox, or `kubectl port-forward` the hub to your machine for the Console/`/status`.
 - **Bastion Developer SKU** is browser/RDP only (no public IP, single session, same-VNet) and is limited to [certain regions](https://learn.microsoft.com/azure/bastion/bastion-overview#sku); switch the [bastion module](infra/modules/bastion.bicep) to Standard if it's unavailable in yours.
+- **The hub IP is pinned** to `10.0.7.100` so the `seleniumgrid.dev.lab` Private DNS A record is stable. This value is set in **two places that must stay in sync**: the `azure-load-balancer-ipv4` annotation in [helm/selenium-grid/values.yaml](helm/selenium-grid/values.yaml) and `hubInternalIp` in [infra/resources.bicep](infra/resources.bicep). The address must be free and within the AKS subnet (`10.0.4.0/22`).
+- **Desktop shortcuts & repo clone** are created by the Jumpbox bootstrap (as SYSTEM) on the Public Desktop, and the repo is cloned to `C:\Demo\aks-seleniumgrid`. If the winget/git steps failed, re-run the bootstrap (see the Allure note) or `git clone` manually.
+- **Grid Console URL needs the trailing slash + plain http.** Use `http://seleniumgrid.dev.lab:4444/ui/` (or `http://<hub-ip>:4444/ui/`). Without the trailing slash the console's relative assets 404 and the page renders blank; the hub doesn't serve TLS on 4444, so `https://` fails. `/status` is the health check; a browser **GET** to `/wd/hub` returns `"unknown command"` — that's expected (it's the POST-only WebDriver endpoint), not an error.
+- **Private DNS resolution** relies on the VNet using default Azure-provided DNS (this template doesn't set custom DNS servers). The `dev.lab` zone uses `.lab` deliberately — the real `.dev` TLD is HSTS-preloaded and would force HTTPS, breaking the plain-http hub.
+- **Transient AKS API resets from the local machine.** `azd`/Helm calls to the public API server can hit `An existing connection was forcibly closed`; the postprovision hook retries the Helm step automatically. If it stays flaky, run the grid install from the Jumpbox instead (Step 3).
+- **Windows 11 client image licensing.** The Jumpbox uses `MicrosoftWindowsDesktop/windows-11/win11-24h2-pro`, intended for eligible subscriptions. If yours rejects the client SKU, switch the image in [infra/modules/jumpbox.bicep](infra/modules/jumpbox.bicep) to Windows Server with Desktop Experience (no Trusted Launch/TPM changes needed beyond the image reference).

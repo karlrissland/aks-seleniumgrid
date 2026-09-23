@@ -25,6 +25,9 @@ hub:
   servicePort: 4444
   serviceAnnotations:
     service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+    # Pinned static internal IP so a stable private DNS name (seleniumgrid.dev.lab)
+    # can point at it. MUST match hubInternalIp in infra/resources.bicep.
+    service.beta.kubernetes.io/azure-load-balancer-ipv4: "10.0.7.100"
 
   resources:
     limits:
