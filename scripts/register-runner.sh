@@ -21,15 +21,16 @@ echo "=== Registering GitHub Actions runner '${RUNNER_NAME}' on ${RUNNER_VM_NAME
 # Pin an explicit version only if the caller forced one; otherwise auto-detect the
 # latest release. GitHub rejects registration from deprecated runner versions, so a
 # stale hardcoded version silently fails on the VM and no runner ever comes online.
+# The detection call is unauthenticated: actions/runner is public and a fine-grained
+# PAT scoped only to this repo can return 403 on a cross-repo call.
 RUNNER_VERSION="${RUNNER_VERSION:-}"
 if [ -z "${RUNNER_VERSION}" ]; then
     echo "0. Detecting latest GitHub Actions runner version..."
     RUNNER_VERSION=$(curl -fsSL \
         -H "Accept: application/vnd.github+json" \
-        -H "${AUTH_HEADER}" \
-        -H "X-GitHub-Api-Version: 2022-11-28" \
         "https://api.github.com/repos/actions/runner/releases/latest" \
-        | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'].lstrip('v'))")
+        | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'].lstrip('v'))" 2>/dev/null || true)
+    RUNNER_VERSION="$(echo "${RUNNER_VERSION}" | tr -d '[:space:]')"
     if [ -z "${RUNNER_VERSION}" ]; then
         echo "WARNING: Could not detect latest runner version; falling back to 2.328.0." >&2
         RUNNER_VERSION="2.328.0"

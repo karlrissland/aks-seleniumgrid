@@ -6,7 +6,8 @@ set -e
 
 REPO_URL="$1"
 RUNNER_NAME="$2"
-RUNNER_VERSION="$3"
+# Trim stray whitespace so a malformed value can't corrupt the download URL.
+RUNNER_VERSION="$(echo "$3" | tr -d '[:space:]')"
 TOKEN="$4"
 RUNNER_USER="azureuser"
 RUNNER_HOME="/home/$RUNNER_USER"
@@ -15,6 +16,8 @@ RUNNER_DIR="$RUNNER_HOME/actions-runner"
 # Fall back to auto-detecting the latest release when no version is passed in.
 # GitHub rejects registration from deprecated runner versions, so we never want a
 # stale hardcoded value; this keeps the script self-sufficient if run directly.
+# The call is unauthenticated on purpose: actions/runner is public and a
+# fine-grained PAT scoped to another repo can 403 on it.
 if [ -z "${RUNNER_VERSION}" ]; then
     echo "No runner version supplied; detecting the latest release..."
     RUNNER_VERSION=$(curl -fsSL \
@@ -48,11 +51,26 @@ fi
 echo "Preparing runner directory..."
 su - "$RUNNER_USER" -c "mkdir -p '$RUNNER_DIR'"
 
-echo "Downloading GitHub Actions Runner..."
-su - "$RUNNER_USER" -c "cd '$RUNNER_DIR' && curl -o actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz -L https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
+RUNNER_TARBALL="actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
+RUNNER_URL="https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/${RUNNER_TARBALL}"
+echo "Downloading GitHub Actions Runner from: ${RUNNER_URL}"
+# -f makes curl fail on HTTP errors instead of silently saving the error body
+# (a 404 'Not Found' page is what caused 'gzip: stdin: not in gzip format').
+if ! su - "$RUNNER_USER" -c "cd '$RUNNER_DIR' && curl -fSL --retry 3 --retry-delay 5 -o '$RUNNER_TARBALL' '$RUNNER_URL'"; then
+    echo "ERROR: Failed to download the runner (version '${RUNNER_VERSION}') from ${RUNNER_URL}" >&2
+    exit 1
+fi
+
+# Guard against a saved error page: confirm the file is a valid gzip archive.
+if ! su - "$RUNNER_USER" -c "gzip -t '$RUNNER_DIR/$RUNNER_TARBALL'" 2>/dev/null; then
+    echo "ERROR: Downloaded file is not a valid gzip archive. First bytes:" >&2
+    su - "$RUNNER_USER" -c "head -c 200 '$RUNNER_DIR/$RUNNER_TARBALL'" >&2 || true
+    echo >&2
+    exit 1
+fi
 
 echo "Extracting runner package..."
-su - "$RUNNER_USER" -c "cd '$RUNNER_DIR' && tar xzf ./actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
+su - "$RUNNER_USER" -c "cd '$RUNNER_DIR' && tar xzf './$RUNNER_TARBALL'"
 
 # `selenium` label lets the test job target this in-VNet runner (the only host
 # that can reach the private Selenium Grid hub).
