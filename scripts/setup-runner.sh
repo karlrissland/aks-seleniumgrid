@@ -12,6 +12,21 @@ RUNNER_USER="azureuser"
 RUNNER_HOME="/home/$RUNNER_USER"
 RUNNER_DIR="$RUNNER_HOME/actions-runner"
 
+# Fall back to auto-detecting the latest release when no version is passed in.
+# GitHub rejects registration from deprecated runner versions, so we never want a
+# stale hardcoded value; this keeps the script self-sufficient if run directly.
+if [ -z "${RUNNER_VERSION}" ]; then
+    echo "No runner version supplied; detecting the latest release..."
+    RUNNER_VERSION=$(curl -fsSL \
+        -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/actions/runner/releases/latest" \
+        | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'].lstrip('v'))" 2>/dev/null || true)
+    if [ -z "${RUNNER_VERSION}" ]; then
+        echo "WARNING: Could not detect latest runner version; falling back to 2.328.0." >&2
+        RUNNER_VERSION="2.328.0"
+    fi
+fi
+
 echo "Setting up GitHub Actions Runner: $RUNNER_NAME for repo $REPO_URL"
 echo "Using runner version: $RUNNER_VERSION"
 echo "---------------------------------------------"
