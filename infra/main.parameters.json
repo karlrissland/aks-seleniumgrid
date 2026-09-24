@@ -10,6 +10,9 @@
     },
     "adminPassword": {
       "value": "${ADMIN_PASSWORD}"
+    },
+    "aksNodeCount": {
+      "value": ${AKS_NODE_COUNT=2}
     }
   }
 }

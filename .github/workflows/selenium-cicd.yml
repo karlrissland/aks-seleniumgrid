@@ -16,7 +16,11 @@ on:
       location:
         description: Azure region
         type: string
-        default: eastus2
+        default: swedencentral
+      aksNodeCount:
+        description: Number of AKS worker nodes
+        type: number
+        default: 2
       browser:
         description: Browser(s) to run
         type: choice
@@ -41,6 +45,7 @@ env:
   AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
   AZURE_ENV_NAME: ${{ inputs.environmentName }}
   AZURE_LOCATION: ${{ inputs.location }}
+  AKS_NODE_COUNT: ${{ inputs.aksNodeCount }}
   ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
 
 jobs:
