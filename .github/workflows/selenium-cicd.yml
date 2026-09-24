@@ -12,7 +12,7 @@ on:
       environmentName:
         description: azd environment name (also names the resource group rg-<name>)
         type: string
-        default: sel-cicd
+        default: -cicd
       location:
         description: Azure region
         type: string
