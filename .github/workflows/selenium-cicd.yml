@@ -135,6 +135,10 @@ jobs:
     needs: [provision, test]
     if: ${{ always() && inputs.destroy }}
     runs-on: ubuntu-latest
+    # Gate teardown behind a protected environment so a reviewer must approve
+    # before any resources are deprovisioned. Configure required reviewers on the
+    # `teardown-approval` environment under Settings > Environments.
+    environment: teardown-approval
     steps:
       - uses: actions/checkout@v4
 
