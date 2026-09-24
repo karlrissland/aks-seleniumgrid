@@ -53,15 +53,24 @@ if [ -z "${TOKEN}" ]; then
 fi
 
 # Run the on-VM setup script through the VM agent (no inbound SSH needed).
+# We inline the arguments via `set --` at the top of the script rather than using
+# `az vm run-command --parameters`, whose positional passing is unreliable and
+# previously shifted the version arg (it resolved to the stray value 'Actions').
 # NOTE: `az vm run-command invoke` exits 0 even when the in-VM script fails, so we
 # capture the full output and inspect it rather than trusting the exit code.
 echo "2. Executing setup-runner.sh on ${RUNNER_VM_NAME} via az vm run-command..."
+COMBINED_SCRIPT="$(mktemp)"
+trap 'rm -f "${COMBINED_SCRIPT}"' EXIT
+{
+    printf 'set -- %q %q %q %q\n' "${REPO_URL}" "${RUNNER_NAME}" "${RUNNER_VERSION}" "${TOKEN}"
+    cat "${SCRIPT_DIR}/setup-runner.sh"
+} > "${COMBINED_SCRIPT}"
+
 RUN_OUTPUT=$(az vm run-command invoke \
     --resource-group "${RESOURCE_GROUP}" \
     --name "${RUNNER_VM_NAME}" \
     --command-id RunShellScript \
-    --scripts "@${SCRIPT_DIR}/setup-runner.sh" \
-    --parameters "${REPO_URL}" "${RUNNER_NAME}" "${RUNNER_VERSION}" "${TOKEN}" \
+    --scripts "@${COMBINED_SCRIPT}" \
     --query "value[0].message" -o tsv)
 
 echo "----- setup-runner.sh output (from VM) -----"
