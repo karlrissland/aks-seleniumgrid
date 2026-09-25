@@ -319,7 +319,7 @@ How the workflow is structured (three jobs):
 
 1. **provision** (GitHub-hosted) — logs into Azure via **OIDC**, runs `azd up` (provisions the network, Bastion, Jumpbox, AKS, and `gh-runner-vm`, then installs the grid), and registers a self-hosted runner on `gh-runner-vm` with the label **`selenium`**.
 2. **test** (`runs-on: [self-hosted, selenium]`) — runs the pytest suite against the private hub at `http://seleniumgrid.dev.lab:4444/wd/hub` and uploads `test-results/report.html` + `allure-results/` as a **workflow artifact**.
-3. **teardown** (GitHub-hosted, `if: always() && destroy`) — deregisters the runner and runs `azd down --force --purge`.
+3. **teardown** (GitHub-hosted, `if: always() && destroy`) — gated behind the **`teardown-approval`** GitHub Environment (a reviewer must approve before anything is destroyed), then deregisters the runner and runs `azd down --force --purge`.
 
 The runner is set up using the pattern from [karlrissland/github-runner-setup](https://github.com/karlrissland/github-runner-setup): a registration token is minted with the GitHub REST API and [scripts/setup-runner.sh](scripts/setup-runner.sh) is executed on the VM via `az vm run-command` ([scripts/register-runner.sh](scripts/register-runner.sh) / [scripts/unregister-runner.sh](scripts/unregister-runner.sh)).
 
@@ -375,6 +375,19 @@ az role assignment create --assignee $appId --role "User Access Administrator" -
 </details>
 
 > The federated **subject** must match how the workflow runs. The example covers `workflow_dispatch` on the **`main`** branch (`ref:refs/heads/main`). Run from another branch → add a matching credential (or use a GitHub **Environment** subject `repo:<owner>/<repo>:environment:<name>` for an approval gate).
+>
+> ⚠️ **Approval gate needs its own credential.** The **teardown** job binds to the `teardown-approval` Environment, so GitHub presents the subject `repo:<owner>/aks-seleniumgrid:environment:teardown-approval` **instead of** the branch ref. Without a matching federated credential the teardown login fails with `AADSTS700213: No matching federated identity record` **after you approve**. [scripts/setup-oidc.sh](scripts/setup-oidc.sh) creates this second credential automatically; if you federated manually, add it too:
+>
+> ```bash
+> az ad app federated-credential create --id "$appId" --parameters '{
+>   "name": "gh-aks-seleniumgrid-env-teardown-approval",
+>   "issuer": "https://token.actions.githubusercontent.com",
+>   "subject": "repo:<owner>/aks-seleniumgrid:environment:teardown-approval",
+>   "audiences": ["api://AzureADTokenExchange"]
+> }'
+> ```
+>
+> You must also create the Environment itself: **Settings → Environments → New environment → `teardown-approval`**, and add yourself under **Required reviewers** so the gate actually pauses for approval.
 >
 > ⚠️ If Azure login later fails with `AADSTS700213: No matching federated identity record`, GitHub is presenting **immutable numeric IDs** in the subject (e.g. `repo:owner@123/repo@456:ref:refs/heads/main`) after a repo/owner rename or delete-and-recreate. Add a second federated credential whose `subject` matches the string in the error **exactly** (the IDs are stable).
 >

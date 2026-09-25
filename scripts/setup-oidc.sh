@@ -9,6 +9,9 @@ REPO_OWNER="${REPO_OWNER:?Set REPO_OWNER (GitHub org/user)}"
 REPO_NAME="${REPO_NAME:?Set REPO_NAME}"
 APP_NAME="${APP_NAME:-gh-oidc-${REPO_NAME}}"
 BRANCH="${BRANCH:-main}"
+# GitHub swaps the OIDC subject to the environment form for any job that targets an
+# environment, so the teardown (approval-gated) job needs its own credential.
+TEARDOWN_ENVIRONMENT="${TEARDOWN_ENVIRONMENT:-teardown-approval}"
 SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(az account show --query id -o tsv)}"
 TENANT_ID="$(az account show --query tenantId -o tsv)"
 
@@ -42,6 +45,21 @@ if [ -z "$(az ad app federated-credential list --id "${APP_ID}" --query "[?subje
     echo "Created federated credential for subject: ${SUBJECT}"
 else
     echo "Federated credential already exists for subject: ${SUBJECT}"
+fi
+
+# Federated credential for the approval-gated teardown environment. Jobs that bind
+# to a GitHub Environment present subject '...:environment:<name>' instead of the ref.
+ENV_SUBJECT="repo:${REPO_OWNER}/${REPO_NAME}:environment:${TEARDOWN_ENVIRONMENT}"
+if [ -z "$(az ad app federated-credential list --id "${APP_ID}" --query "[?subject=='${ENV_SUBJECT}'] | [0].id" -o tsv)" ]; then
+    az ad app federated-credential create --id "${APP_ID}" --parameters "{
+        \"name\": \"gh-${REPO_NAME}-env-${TEARDOWN_ENVIRONMENT}\",
+        \"issuer\": \"https://token.actions.githubusercontent.com\",
+        \"subject\": \"${ENV_SUBJECT}\",
+        \"audiences\": [\"api://AzureADTokenExchange\"]
+    }" >/dev/null
+    echo "Created federated credential for subject: ${ENV_SUBJECT}"
+else
+    echo "Federated credential already exists for subject: ${ENV_SUBJECT}"
 fi
 
 # Grant roles so the workflow can provision + tear down. Contributor covers
