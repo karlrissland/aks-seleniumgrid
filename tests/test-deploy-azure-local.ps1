@@ -42,6 +42,7 @@ try {
     $script:mismatchNetwork = $false
     $script:cancelDeployment = $false
     $script:failHelm = $false
+    $script:invalidJson = $false
 
     function Read-DeploymentInput {
         param([string]$Label, [string]$Default, [switch]$Optional)
@@ -56,21 +57,26 @@ try {
         $command = "$Tool $($Arguments -join ' ')"
         $script:calls.Add($command)
         if ($Tool -eq 'az') {
+            if ($script:invalidJson -and $Capture) { return 'Plain text instead of JSON' }
             $payload = switch -Regex ($command) {
                 '^az version ' { @{ 'azure-cli' = '2.77.0' }; break }
                 '^az account list ' { ,@(@{ id = 'test-subscription' }); break }
                 '^az resource show .*appliances/' { @{ properties = @{ provisioningState = 'Succeeded'; status = 'Running' } }; break }
                 '^az customlocation list ' { ,@(@{ id = $script:customId; name = 'local'; location = 'westeurope'; hostResourceId = $script:bridgeId }); break }
-                '^az resource list ' { ,@(@{ id = $script:networkId; name = 'workload' }); break }
-                '^az resource show .*logicalNetworks/' { @{ extendedLocation = @{ name = $script:customId }; properties = @{ provisioningState = 'Succeeded' } }; break }
-                '^az aksarc list ' {
-                    if ($script:reuseCluster) {
-                        $selectedNetwork = if ($script:mismatchNetwork) { 'wrong-network' } else { $script:networkId }
-                        ,@(@{ id = "$script:clusterId/providers/Microsoft.HybridContainerService/provisionedClusterInstances/default"; extendedLocation = @{ name = $script:customId }; properties = @{ cloudProviderProfile = @{ infraNetworkProfile = @{ vnetSubnetIds = @($selectedNetwork) } }; controlPlane = @{ controlPlaneEndpoint = @{ hostIP = '192.168.1.10' } } } })
-                    } else { ,@() }
+                '^az resource list .*Microsoft.AzureStackHCI/logicalNetworks' { ,@(@{ id = $script:networkId; name = 'workload' }); break }
+                '^az resource list .*Microsoft.Kubernetes/connectedClusters' {
+                    if ($script:reuseCluster) { ,@(@{ id = $script:clusterId }) } else { ,@() }
                     break
                 }
-                '^az aksarc show ' { @{ provisioningState = 'Succeeded' }; break }
+                '^az resource show .*logicalNetworks/' { @{ extendedLocation = @{ name = $script:customId }; properties = @{ provisioningState = 'Succeeded' } }; break }
+                '^az aksarc list ' { throw 'Do not use the aksarc list command for JSON discovery.' }
+                '^az aksarc show ' {
+                    if ($script:reuseCluster) {
+                        $selectedNetwork = if ($script:mismatchNetwork) { 'wrong-network' } else { $script:networkId }
+                        @{ id = "$script:clusterId/providers/Microsoft.HybridContainerService/provisionedClusterInstances/default"; extendedLocation = @{ name = $script:customId }; properties = @{ provisioningState = 'Succeeded'; cloudProviderProfile = @{ infraNetworkProfile = @{ vnetSubnetIds = @($selectedNetwork) } }; controlPlane = @{ controlPlaneEndpoint = @{ hostIP = '192.168.1.10' } } } }
+                    } else { @{ provisioningState = 'Succeeded' } }
+                    break
+                }
                 default { $null }
             }
             if ($Capture) { return (ConvertTo-Json -InputObject $payload -Depth 30 -Compress) }
@@ -102,12 +108,25 @@ try {
         $script:calls.Clear()
     }
 
+    $script:invalidJson = $true
+    $jsonFailed = $false
+    try { Invoke-DeploymentAz @('resource', 'list') -Json } catch {
+        $jsonFailed = $_.Exception.Message -match 'az resource list' -and $_.Exception.Message -match 'Plain text instead of JSON'
+    }
+    $script:invalidJson = $false
+    Assert-DeploymentTest $jsonFailed 'Malformed JSON diagnostics include the failing command and raw stdout.'
+    Write-Host 'PASS: actionable malformed JSON diagnostics'
+
     Set-DeploymentAnswers
     Invoke-AzureLocalDeployment
     Assert-DeploymentTest ($script:answers.Count -eq 0) 'All new-cluster prompts consumed.'
     Assert-DeploymentTest (@($script:calls | Where-Object { $_ -match '^az aksarc create .*--validate' }).Count -eq 1) 'Validates before provisioning.'
     Assert-DeploymentTest (@($script:calls | Where-Object { $_ -match '^az aksarc create .*--no-wait' }).Count -eq 1) 'Creates AKS asynchronously for status polling.'
     Assert-DeploymentTest (@($script:calls | Where-Object { $_ -match '^helm upgrade --install' }).Count -eq 1) 'Installs Selenium.'
+    Assert-DeploymentTest (@($script:calls | Where-Object { $_ -match '^az aksarc list ' }).Count -eq 0) 'Avoids non-JSON aksarc list output.'
+    $createIndex = $script:calls.FindIndex([Predicate[string]]{ param($command) $command -match '^az aksarc create .*--no-wait' })
+    $showIndex = $script:calls.FindIndex([Predicate[string]]{ param($command) $command -match '^az aksarc show ' })
+    Assert-DeploymentTest ($showIndex -gt $createIndex) 'New clusters are not queried before provisioning starts.'
     $overrides = Get-Content (Join-Path $testDirectory 'aks-selenium-local-local-values.json') -Raw | ConvertFrom-Json
     Assert-DeploymentTest ($null -eq $overrides.hub.serviceAnnotations.'service.beta.kubernetes.io/azure-load-balancer-ipv4') 'Removes cloud IP annotation.'
     Assert-DeploymentTest ($overrides.hub.serviceAnnotations.'metallb.universe.tf/loadBalancerIPs' -eq '192.168.1.20') 'Requests the reserved local IP.'
@@ -135,6 +154,7 @@ try {
     $mismatchFailed = $false
     try { Invoke-AzureLocalDeployment } catch { $mismatchFailed = $_.Exception.Message -match 'different custom location or logical network' }
     Assert-DeploymentTest $mismatchFailed 'Rejects an existing cluster on the wrong network.'
+    Assert-DeploymentTest (-not $script:DeploymentClusterAvailable) 'Preflight failures do not enable deployment diagnostics.'
     Write-Host 'PASS: wrong-network rejection'
 
     $script:mismatchNetwork = $false

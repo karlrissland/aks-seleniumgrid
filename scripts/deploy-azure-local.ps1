@@ -79,7 +79,14 @@ function Invoke-DeploymentAz {
     }
     if ($Json) {
         $text = Invoke-DeploymentTool az ($Arguments + @('--output', 'json')) -Capture
-        return ($text | ConvertFrom-Json -Depth 100 -ErrorAction Stop)
+        try {
+            return ($text | ConvertFrom-Json -Depth 100 -ErrorAction Stop)
+        } catch {
+            throw [InvalidOperationException]::new(
+                "Azure CLI returned invalid JSON for: az $($Arguments -join ' ') --output json`nRaw stdout:`n$text",
+                $_.Exception
+            )
+        }
     }
     Invoke-DeploymentTool az ($Arguments + @('--verbose', '--output', 'none'))
 }
@@ -117,6 +124,7 @@ function Invoke-AzureLocalDeployment {
     $script:DeploymentSubscription = $null
     $script:DeploymentKubeconfig = $null
     $script:DeploymentClusterArgs = $null
+    $script:DeploymentClusterAvailable = $false
     $script:DeploymentKubernetesAvailable = $false
     foreach ($tool in @('az', 'kubectl', 'helm')) {
         if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "Required tool '$tool' is missing from PATH." }
@@ -168,12 +176,12 @@ function Invoke-AzureLocalDeployment {
     if ($targetCluster -notmatch '^[a-z][a-z0-9-]{0,61}[a-z0-9]$') { throw 'Use a 2-63 character lowercase cluster name, starting with a letter and ending with a letter or digit.' }
     if ($Namespace -notmatch '^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$') { throw 'Namespace must be a Kubernetes DNS label.' }
     $script:DeploymentClusterArgs = @('--resource-group', $targetGroup, '--name', $targetCluster)
-    $clusters = @(Invoke-DeploymentAz @('aksarc', 'list') -Json)
     $expectedClusterId = "/subscriptions/$script:DeploymentSubscription/resourceGroups/$targetGroup/providers/Microsoft.Kubernetes/connectedClusters/$targetCluster"
-    $existingCluster = $clusters | Where-Object {
-        $_.id -eq $expectedClusterId -or
-        $_.id -eq "$expectedClusterId/providers/Microsoft.HybridContainerService/provisionedClusterInstances/default"
-    } | Select-Object -First 1
+    $clusters = @(Invoke-DeploymentAz @('resource', 'list', '--resource-type', 'Microsoft.Kubernetes/connectedClusters') -Json)
+    $existingCluster = $null
+    if ($expectedClusterId -in $clusters.id) {
+        $existingCluster = Invoke-DeploymentAz (@('aksarc', 'show') + $script:DeploymentClusterArgs) -Json
+    }
     $createArgs = @()
     $controlPlaneIp = $null
     if ($existingCluster) {
@@ -182,6 +190,7 @@ function Invoke-AzureLocalDeployment {
         if ($existingCluster.extendedLocation.name -ne $customLocationId -or $networkId -notin $existingProperties.cloudProviderProfile.infraNetworkProfile.vnetSubnetIds) {
             throw 'Existing cluster belongs to a different custom location or logical network.'
         }
+        $script:DeploymentClusterAvailable = $true
         Write-Warning 'Existing cluster will be reused without changing its size or Kubernetes version.'
     } else {
         Invoke-DeploymentTool az @('aksarc', 'vmsize', 'list', '--custom-location', $customLocationId, '--subscription', $script:DeploymentSubscription, '--output', 'table')
@@ -226,6 +235,7 @@ function Invoke-AzureLocalDeployment {
         Write-DeploymentStatus 'Validating AKS deployment inputs'
         Invoke-DeploymentAz ($createArgs + @('--validate'))
         Write-DeploymentStatus 'Starting AKS provisioning'
+        $script:DeploymentClusterAvailable = $true
         Invoke-DeploymentAz ($createArgs + @('--no-wait'))
     }
     Wait-DeploymentCondition 'AKS provisioning' {
@@ -309,7 +319,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         Write-Host ($deploymentError | Format-List * -Force | Out-String) -ForegroundColor Red
         Write-Host "Stack trace: $($deploymentError.ScriptStackTrace)" -ForegroundColor Red
         Write-Warning 'Deployment stopped. Resources are retained for diagnosis; rerun after resolving the error.'
-        if ($script:DeploymentClusterArgs) {
+        if ($script:DeploymentClusterAvailable) {
             try { Invoke-DeploymentAz (@('aksarc', 'show') + $script:DeploymentClusterArgs) -Json | ConvertTo-Json -Depth 50 | Out-Host } catch { Write-Warning "Azure diagnostics failed: $_" }
         }
         if ($script:DeploymentKubernetesAvailable) {
