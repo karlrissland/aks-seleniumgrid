@@ -2,6 +2,8 @@
 
 Deploy and run a multi-browser **Selenium Grid 4** cluster on **Azure Kubernetes Service (AKS)** inside a private, VNet-isolated environment accessed via **Azure Bastion** and a **Windows 11 Jumpbox**.
 
+Alternatively, deploy AKS and Selenium Grid to an existing **Azure Local** environment using the interactive [Azure Local deployment instructions](#azure-local-deployment). The architecture below and the `azd` getting-started steps describe the Azure cloud deployment.
+
 ---
 
 ## 🏛️ Architecture Overview
@@ -76,6 +78,108 @@ Deploy and run a multi-browser **Selenium Grid 4** cluster on **Azure Kubernetes
 │   └── unregister-runner.sh           # Deregisters the runner from the repo (CI)
 └── README.md                          # Project documentation
 ```
+
+---
+
+## Azure Local Deployment
+
+Use [scripts/deploy-azure-local.ps1](scripts/deploy-azure-local.ps1) to create an AKS cluster on an existing Azure Local environment, configure an Arc-managed MetalLB load balancer, and deploy Selenium Grid. This is a separate deployment path: **do not run `azd up` for Azure Local**. The existing cloud templates and deployment hooks remain unchanged.
+
+### Prerequisites
+
+- A supported, Azure-connected Azure Local installation with a healthy resource bridge, associated custom location, AKS infrastructure components, and a successfully provisioned logical network. The script does not install or repair these platform components.
+- A management workstation or runner with **PowerShell 7.2+**, **Azure CLI 2.77.0+**, **Helm 3.10+** (for `--set-json`), and **kubectl** on `PATH`. Run from this management machine, not an Azure Local host.
+- Direct network access from that machine to the local Kubernetes API, and access from test clients to the grid on TCP port **4444**. This script uses a dedicated admin kubeconfig, not an Azure Arc proxy.
+- Outbound connectivity for Azure/Arc management, CLI extensions, the Helm repository, and container images. The Bing/Google tests also require internet access from the browser pods.
+- Azure permissions to read the bridge, custom location, and logical network; create the target resource group and AKS resources; obtain admin credentials; and configure the MetalLB extension and load balancer. MetalLB enablement also requires role-assignment permissions and the documented Microsoft Graph `Application.Read.All` permission. Coordinate these with your platform administrator before running.
+- An existing **SSH public key file** and a **Microsoft Entra group object ID** for cluster administrators. Keep the corresponding private key secure; never enter it at the public-key prompt.
+- Capacity for the local control plane, Linux workers, platform overhead, and browser/video containers. The default is two workers; 4 vCPU / 16 GB per worker is a starting point, not a production sizing guarantee.
+
+Reserve two different IPv4 addresses with your network administrator before starting:
+
+| Address | Requirement |
+| --- | --- |
+| Kubernetes control-plane IP | Unused address in the selected logical network subnet, reachable from the resource bridge and management machine. |
+| Selenium load-balancer IP | Unused address in the same Layer 2 subnet as the workers, outside node allocation and DHCP pools. The script uses a single-address MetalLB pool in **ARP mode**, not BGP. |
+
+The pod CIDR must not overlap your local or routed networks. The script validates address syntax, but cannot prove that addresses are reserved, unused, or correctly routed.
+
+### Run the Interactive Deployment
+
+From the repository root in PowerShell 7:
+
+```powershell
+./scripts/deploy-azure-local.ps1 -Verbose
+```
+
+The script uses your existing Azure CLI login, or starts an interactive login if no subscriptions are cached. If your login has expired or belongs to the wrong tenant, authenticate to the appropriate tenant before retrying. The subscription is taken from the resource bridge ID.
+
+Have the following information ready for the prompts:
+
+| Prompt | What to provide |
+| --- | --- |
+| Resource bridge ARM resource ID | Full ID in the form `/subscriptions/<subscription-id>/resourceGroups/<platform-rg>/providers/Microsoft.ResourceConnector/appliances/<bridge-name>`. Find it in the bridge's Azure portal Properties or JSON view. |
+| Custom location ARM resource ID | A custom location attached to that bridge. The script lists matches and offers a default when only one exists. |
+| Logical network ARM resource ID | An existing `Microsoft.AzureStackHCI/logicalNetworks` resource in the same subscription and selected custom location. |
+| Target resource group and cluster name | Defaults: `rg-selenium-local` and `aks-selenium-local`. |
+| Worker and control-plane VM sizes | Choose sizes supported by the local platform; the script displays the supported list. |
+| Worker count | Default: `2`. One control-plane node is created, so the default cluster is not control-plane highly available. |
+| Control-plane IP, administrator group, SSH public key path | The reserved API address, Entra group object ID, and local public-key file. |
+| Kubernetes version and pod CIDR | Choose a supported version, or press Enter for the platform default. Default pod CIDR: `10.244.0.0/16`. |
+| Selenium load-balancer IP | The separately reserved local address for the grid. |
+| Selenium Helm chart version | Enter a version to pin it, or press Enter for the latest chart. The existing repository values determine browser image tags. |
+| Deployment confirmation | Review the target and enter the exact text `DEPLOY` to proceed. |
+
+Local CLI extensions are installed/upgraded during preflight, before deployment confirmation. After confirmation, the script validates the AKS inputs, starts provisioning, prints provisioning state, waits for Kubernetes nodes, configures MetalLB, and installs the chart using [helm/selenium-grid/values.yaml](helm/selenium-grid/values.yaml) with local load-balancer overrides. It checks hub readiness, two registered nodes for each browser, and assignment of the requested grid IP before reporting success.
+
+You can supply the bridge and target names in advance; remaining inputs are still prompted:
+
+```powershell
+./scripts/deploy-azure-local.ps1 `
+  -ResourceBridgeId '/subscriptions/<subscription-id>/resourceGroups/<platform-rg>/providers/Microsoft.ResourceConnector/appliances/<bridge-name>' `
+  -ResourceGroup 'rg-selenium-local' `
+  -ClusterName 'aks-selenium-local' `
+  -TimeoutMinutes 60 `
+  -LogDirectory "$HOME/selenium-local-logs" `
+  -Verbose
+```
+
+`-TimeoutMinutes` controls the AKS provisioning wait (default 45 minutes, allowed range 5-180), not the overall script runtime. Kubernetes and grid checks have separate bounded waits. Optional `-Namespace` and `-ValuesFile` parameters are available; the readiness checks assume the repository's hub-mode layout and at least two nodes per browser.
+
+### Access and Test the Grid
+
+On success, the script prints the grid console URL (`http://<grid-ip>:4444/ui/`), WebDriver URL (`http://<grid-ip>:4444/wd/hub`), and dedicated kubeconfig path. It does not change your default kubeconfig.
+
+From a client with access to the local grid subnet, replace the example IP with the printed address:
+
+```powershell
+$gridIp = '192.168.1.20'
+Invoke-RestMethod "http://${gridIp}:4444/status"
+python -m pip install -r tests/requirements.txt
+python -m pytest tests/ --grid-url "http://${gridIp}:4444/wd/hub" --browser-name all -v
+```
+
+An assigned load-balancer IP does not prove client routing or firewall access; the client-side status request above verifies that path. Configure a local DNS record separately if you want a hostname. The script does **not** create Azure Bastion, a jumpbox, a GitHub runner, or the cloud deployment's `seleniumgrid.dev.lab` DNS record.
+
+**Security:** repository defaults leave Grid and noVNC unauthenticated. Restrict access to a trusted test network; do not expose them publicly. Logs may contain infrastructure details, and the saved kubeconfig contains cluster-admin credentials. Protect both and remove credentials when no longer needed.
+
+### Status, Errors, and Reruns
+
+Timestamped stage messages and provisioning states are printed during deployment. `-Verbose` adds command details; Azure write operations also enable CLI verbose output. Native-command failures include the command, exit code, and captured error output. Errors stop the script, print exception details and a stack trace, and attempt to collect cluster state, pod descriptions, events, and hub logs when available. Diagnostics may be limited if access or provisioning failed early.
+
+A transcript, dedicated kubeconfig, and generated local-values JSON are saved under `-LogDirectory`. By default this is the `selenium-azure-local` directory under the current user's temporary directory (normally `$env:TEMP/selenium-azure-local` on Windows). The transcript path is printed at startup and completion; retain it outside temporary storage when needed.
+
+- **Bridge/custom location/network validation fails:** check resource IDs, subscription access, resource provisioning state, and platform health with your Azure Local administrator.
+- **AKS provisioning fails or times out:** inspect the transcript and Azure resource errors; check local capacity, supported sizes/version, IP reservations, and resource bridge reachability.
+- **Kubernetes connection fails:** verify direct access to the control-plane IP and permissions to retrieve admin credentials. Successful Azure provisioning does not guarantee local API connectivity.
+- **MetalLB setup fails:** check Graph/RBAC permissions, extension health, and the load-balancer IP reservation. For extension setup details, use the Microsoft documentation linked below.
+- **Browser readiness or grid access fails:** check pod events for image-pull or capacity errors, browser registration, MetalLB assignment, and client routing/firewalls.
+
+No resources are automatically deleted on failure. Rerunning with the same target reuses an existing cluster only when its custom location and logical network match; it does not resize or upgrade that cluster. After confirmation, it reapplies load-balancer configuration and upgrades/installs Selenium. Keep the reserved grid IP consistent across reruns. A failed cluster provisioning state requires remediation before the rerun can continue.
+
+Cleanup is separate and manual: remove only the workload cluster and related resources you intentionally created. **Do not use `azd down` for this path or delete the shared resource bridge, custom location, or logical network.**
+
+References: [AKS on Azure Local](https://learn.microsoft.com/en-us/azure/aks-hybrid-edge/local/aks-local-overview), [create clusters using Azure CLI](https://learn.microsoft.com/en-us/azure/aks-hybrid-edge/local/aks-create-clusters-cli), and [configure MetalLB using Azure CLI](https://learn.microsoft.com/en-us/azure/aks-hybrid-edge/local/hyperconverged/deploy-load-balancer-cli).
 
 ---
 

@@ -33,33 +33,38 @@ if [ -z "$(az ad sp list --filter "appId eq '${APP_ID}'" --query "[0].id" -o tsv
     echo "Created service principal for ${APP_ID}"
 fi
 
-# Federated credential for the main-branch ref (the workflow_dispatch runs on it).
-SUBJECT="repo:${REPO_OWNER}/${REPO_NAME}:ref:refs/heads/${BRANCH}"
-if [ -z "$(az ad app federated-credential list --id "${APP_ID}" --query "[?subject=='${SUBJECT}'] | [0].id" -o tsv)" ]; then
-    az ad app federated-credential create --id "${APP_ID}" --parameters "{
-        \"name\": \"gh-${REPO_NAME}-${BRANCH}\",
-        \"issuer\": \"https://token.actions.githubusercontent.com\",
-        \"subject\": \"${SUBJECT}\",
-        \"audiences\": [\"api://AzureADTokenExchange\"]
-    }" >/dev/null
-    echo "Created federated credential for subject: ${SUBJECT}"
-else
-    echo "Federated credential already exists for subject: ${SUBJECT}"
-fi
+# GitHub sometimes presents an IMMUTABLE numeric form of the repo path in the OIDC
+# subject (e.g. after an owner/repo rename or delete+recreate), such as
+# 'repo:owner@123/repo@456:...'. That won't match a credential built from the plain
+# 'owner/repo' path, causing AADSTS700213 on azure/login. Set REPO_IMMUTABLE_PATH to
+# the exact 'owner@<id>/repo@<id>' string from the error to also register those subjects.
+REPO_IMMUTABLE_PATH="${REPO_IMMUTABLE_PATH:-}"
 
-# Federated credential for the approval-gated teardown environment. Jobs that bind
-# to a GitHub Environment present subject '...:environment:<name>' instead of the ref.
-ENV_SUBJECT="repo:${REPO_OWNER}/${REPO_NAME}:environment:${TEARDOWN_ENVIRONMENT}"
-if [ -z "$(az ad app federated-credential list --id "${APP_ID}" --query "[?subject=='${ENV_SUBJECT}'] | [0].id" -o tsv)" ]; then
+# create_fic <name-suffix> <subject> — idempotently create a federated credential.
+create_fic() {
+    local name_suffix="$1" subject="$2"
+    if [ -n "$(az ad app federated-credential list --id "${APP_ID}" --query "[?subject=='${subject}'] | [0].id" -o tsv)" ]; then
+        echo "Federated credential already exists for subject: ${subject}"
+        return
+    fi
     az ad app federated-credential create --id "${APP_ID}" --parameters "{
-        \"name\": \"gh-${REPO_NAME}-env-${TEARDOWN_ENVIRONMENT}\",
+        \"name\": \"gh-${REPO_NAME}-${name_suffix}\",
         \"issuer\": \"https://token.actions.githubusercontent.com\",
-        \"subject\": \"${ENV_SUBJECT}\",
+        \"subject\": \"${subject}\",
         \"audiences\": [\"api://AzureADTokenExchange\"]
     }" >/dev/null
-    echo "Created federated credential for subject: ${ENV_SUBJECT}"
-else
-    echo "Federated credential already exists for subject: ${ENV_SUBJECT}"
+    echo "Created federated credential for subject: ${subject}"
+}
+
+# Main-branch ref (the workflow_dispatch runs on it) + the approval-gated teardown
+# environment (jobs bound to a GitHub Environment present '...:environment:<name>').
+create_fic "${BRANCH}" "repo:${REPO_OWNER}/${REPO_NAME}:ref:refs/heads/${BRANCH}"
+create_fic "env-${TEARDOWN_ENVIRONMENT}" "repo:${REPO_OWNER}/${REPO_NAME}:environment:${TEARDOWN_ENVIRONMENT}"
+
+# Immutable-ID variants for the same two subjects, when the numeric path is supplied.
+if [ -n "${REPO_IMMUTABLE_PATH}" ]; then
+    create_fic "${BRANCH}-immutable" "repo:${REPO_IMMUTABLE_PATH}:ref:refs/heads/${BRANCH}"
+    create_fic "env-${TEARDOWN_ENVIRONMENT}-immutable" "repo:${REPO_IMMUTABLE_PATH}:environment:${TEARDOWN_ENVIRONMENT}"
 fi
 
 # Grant roles so the workflow can provision + tear down. Contributor covers
